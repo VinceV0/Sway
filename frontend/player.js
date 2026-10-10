@@ -38,7 +38,8 @@ document.addEventListener('DOMContentLoaded', () => {
     async function fetchPlaylistFromBackend() {
         try {
             console.log("🌐 Fetching tracks from API...");
-            const response = await fetch('http://127.0.0.1:8000/api/tracks');
+            const backendUrl = (typeof window !== 'undefined' && window.__API_BASE_URL__) || 'https://sway-rpfo.onrender.com';
+            const response = await fetch(`${backendUrl}/api/tracks`);
             if (!response.ok) throw new Error(`HTTP status ${response.status}`);
             
             const rawTracks = await response.json();

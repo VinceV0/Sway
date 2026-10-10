@@ -122,31 +122,133 @@ const handler = {
 
       // --- SIGN UP ---
       if ((url.pathname === '/api/signup' || url.pathname === '/api/signup/listener' || url.pathname === '/api/signup/artist') && request.method === 'POST') {
-        const data = await request.json().catch(() => ({}));
-        const name = data.name || '';
-        const email = data.email || '';
-        const password = data.password || '';
-        const role = data.role || (url.pathname.includes('artist') ? 'artist' : 'listener');
-        const genre = data.genre || 'Alternative';
+        let name = '', email = '', password = '', genre = 'Alternative', role = '', inviteKey = '';
+        let imageFile = null;
+
+        const contentType = request.headers.get('content-type') || '';
+        if (contentType.includes('multipart/form-data') || contentType.includes('application/x-www-form-urlencoded')) {
+          const formData = await request.formData().catch(() => null);
+          if (formData) {
+            name      = formData.get('name')       || '';
+            email     = formData.get('email')      || '';
+            password  = formData.get('password')   || '';
+            role      = formData.get('role')       || '';
+            genre     = formData.get('genre')      || 'Alternative';
+            inviteKey = formData.get('invite_key') || formData.get('inviteKey') || '';
+            imageFile = formData.get('file')       || null;
+          }
+        } else {
+          const data = await request.json().catch(() => ({}));
+          name      = data.name       || '';
+          email     = data.email      || '';
+          password  = data.password   || '';
+          role      = data.role       || '';
+          genre     = data.genre      || 'Alternative';
+          inviteKey = data.invite_key || data.inviteKey || '';
+        }
+
+        if (!role) role = url.pathname.includes('artist') ? 'artist' : 'listener';
+
+        if (!name || !email || !password) {
+          return new Response(JSON.stringify({ message: 'Name, email, and password are required.' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json', ...corsHeaders },
+          });
+        }
+
+        // --- ARTIST INVITE KEY VALIDATION ---
+        if (role === 'artist') {
+          const expectedKey = (env.ARTIST_INVITE_KEY || process.env.ARTIST_INVITE_KEY || 'SWAY-ARTIST-2026').trim();
+          const providedKey = (inviteKey || '').trim();
+
+          if (!providedKey || providedKey !== expectedKey) {
+            return new Response(JSON.stringify({ 
+              success: false, 
+              message: 'Invalid or missing artist invite key. An invite code is required to register as an artist.' 
+            }), {
+              status: 403,
+              headers: { 'Content-Type': 'application/json', ...corsHeaders },
+            });
+          }
+        }
 
         const cleanEmail = email.toLowerCase().trim();
-        const existingUser = await usersCollection.findOne({ email: cleanEmail });
-        if (existingUser) {
+        const cleanName  = name.trim();
+
+        // Check for duplicate email
+        const existingByEmail = await usersCollection.findOne({ email: cleanEmail });
+        if (existingByEmail) {
           return new Response(JSON.stringify({ message: 'Email already in use' }), {
             status: 400,
             headers: { 'Content-Type': 'application/json', ...corsHeaders },
           });
         }
 
-        const hashedPassword = await hashPassword(password);
+        // Check for duplicate artist/user name (case-insensitive)
+        const nameRegex = new RegExp(`^\\s*${cleanName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i');
+        const existingByName = await usersCollection.findOne({
+          $or: [{ name: nameRegex }, { artist_name: nameRegex }]
+        });
+        if (existingByName) {
+          return new Response(JSON.stringify({ message: 'An account with this name already exists.' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json', ...corsHeaders },
+          });
+        }
+
+        // Hash password with bcrypt
+        const bcrypt = await import('bcryptjs');
+        const hashedPassword = await bcrypt.hash(password, 12);
+
+        // Upload profile image to Cloudflare R2 if provided
+        let imageUrl = '';
+        if (imageFile && imageFile.name) {
+          try {
+            const accountId = (env.R2_ACCOUNT_ID || process.env.R2_ACCOUNT_ID || '').trim();
+            const accessKey = (env.R2_ACCESS_KEY_ID || process.env.R2_ACCESS_KEY_ID || '').trim();
+            const secretKey = (env.R2_SECRET_ACCESS_KEY || process.env.R2_SECRET_ACCESS_KEY || '').trim();
+            const bucketName = (env.R2_BUCKET_NAME || process.env.R2_BUCKET_NAME || 'sway-audio-dev').trim();
+            const publicDomain = (env.R2_PUBLIC_DOMAIN || env.R2_PUBLIC_URL || process.env.R2_PUBLIC_DOMAIN || process.env.R2_PUBLIC_URL || '').trim().replace(/\/+$/, '');
+
+            if (!accountId || !accessKey || !secretKey) {
+              console.warn('R2 credentials incomplete. Skipping image upload.');
+            } else {
+              const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+              const r2 = new S3Client({
+                region: 'auto',
+                endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+                credentials: {
+                  accessKeyId: accessKey,
+                  secretAccessKey: secretKey,
+                },
+              });
+              const ext = imageFile.name.split('.').pop() || 'jpg';
+              const randHex = Array.from(crypto.getRandomValues(new Uint8Array(4)))
+                .map(b => b.toString(16).padStart(2, '0')).join('');
+              const key = `profiles/${cleanEmail.replace('@', '_')}_${randHex}.${ext}`;
+              const arrayBuf = await imageFile.arrayBuffer();
+              await r2.send(new PutObjectCommand({
+                Bucket: bucketName,
+                Key: key,
+                Body: Buffer.from(arrayBuf),
+                ContentType: imageFile.type || 'image/jpeg',
+              }));
+              imageUrl = `${publicDomain}/${key}`;
+              console.log('Profile image uploaded to R2:', imageUrl);
+            }
+          } catch (r2Err) {
+            console.error('R2 image upload failed during signup:', r2Err);
+          }
+        }
+
         const newUser = {
-          name: name.trim(),
-          artist_name: name.trim(),
+          name: cleanName,
+          artist_name: cleanName,
           email: cleanEmail,
           password: hashedPassword,
           role,
           genre,
-          image: '',
+          image: imageUrl,
           createdAt: new Date(),
         };
 
@@ -154,7 +256,7 @@ const handler = {
 
         return new Response(JSON.stringify({ 
           success: true,
-          message: 'User created successfully',
+          message: `${role === 'artist' ? 'Artist' : 'User'} created successfully`,
           insertedId: result.insertedId 
         }), {
           status: 201,
@@ -189,6 +291,8 @@ const handler = {
           email: user.email,
           name: user.name,
           role: user.role,
+          image: user.image || '',
+          profile_pic: user.image || '',
           user: { name: user.name, email: user.email, role: user.role, image: user.image || '' }
         }), {
           status: 200,
@@ -1134,6 +1238,7 @@ if (typeof process !== 'undefined' && process.versions && process.versions.node)
         });
         
         const env = { 
+          ...process.env,
           MONGO_URI: process.env.MONGO_URI || process.env.MONGODB_URI, 
           MONGODB_DATABASE: process.env.MONGODB_DATABASE || 'Sway' 
         };

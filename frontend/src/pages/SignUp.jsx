@@ -8,6 +8,7 @@ export default function SignUp({ onSignUpSuccess, onBackToHome }) {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [genre, setGenre] = useState('');
+  const [inviteKey, setInviteKey] = useState('');
   const [imageFile, setImageFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -20,6 +21,12 @@ export default function SignUp({ onSignUpSuccess, onBackToHome }) {
     // Check if passwords match before proceeding[cite: 8]
     if (password !== confirmPassword) {
       setError('Passwords do not match.');
+      setLoading(false);
+      return;
+    }
+
+    if (role === 'artist' && !inviteKey.trim()) {
+      setError('Artist invite key is required.');
       setLoading(false);
       return;
     }
@@ -38,6 +45,7 @@ export default function SignUp({ onSignUpSuccess, onBackToHome }) {
 
     if (role === 'artist') {
       formData.append('genre', genre);
+      formData.append('invite_key', inviteKey.trim());
       endpoint = `${API_BASE_URL}/api/signup/artist`;
     }
 
@@ -163,17 +171,33 @@ export default function SignUp({ onSignUpSuccess, onBackToHome }) {
 
           {/* Conditional Field for Artists Only */}
           {role === 'artist' && (
-            <div>
-              <label className="block text-xs font-bold text-[#c3c6d7] uppercase tracking-wider mb-1">Genre</label>
-              <input 
-                type="text" 
-                required={role === 'artist'}
-                value={genre} 
-                onChange={(e) => setGenre(e.target.value)}
-                className="w-full bg-[#11131b] border border-[#434655]/40 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-[#b4c5ff]"
-                placeholder="e.g. Ambient Glitch"
-              />
-            </div>
+            <>
+              <div>
+                <label className="block text-xs font-bold text-[#c3c6d7] uppercase tracking-wider mb-1">Genre</label>
+                <input 
+                  type="text" 
+                  required={role === 'artist'}
+                  value={genre} 
+                  onChange={(e) => setGenre(e.target.value)}
+                  className="w-full bg-[#11131b] border border-[#434655]/40 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-[#b4c5ff]"
+                  placeholder="e.g. Ambient Glitch"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-[#c3c6d7] uppercase tracking-wider mb-1">
+                  Artist Invite Key
+                </label>
+                <input 
+                  type="text" 
+                  required={role === 'artist'}
+                  value={inviteKey} 
+                  onChange={(e) => setInviteKey(e.target.value)}
+                  className="w-full bg-[#11131b] border border-[#434655]/40 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-[#b4c5ff]"
+                  placeholder="Enter your invite key"
+                />
+              </div>
+            </>
           )}
 
           {/* Profile Image Input (Available for both Listeners and Artists) */}
